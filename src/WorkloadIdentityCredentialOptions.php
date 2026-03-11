@@ -1,7 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace AzureOss\Identity;
 
-class WorkloadIdentityCredentialOptions extends TokenCredentialOptions
-{
-}
+final class WorkloadIdentityCredentialOptions extends TokenCredentialOptions {}

@@ -12,9 +12,15 @@ final class DefaultAzureCredential implements TokenCredential
         private readonly DefaultAzureCredentialOptions $options = new DefaultAzureCredentialOptions
     ) {
         $this->chain = new ChainedTokenCredential([
-            new EnvironmentCredential,
-            new WorkloadIdentityCredential,
-            new ManagedIdentityCredential,
+            new EnvironmentCredential(
+                new EnvironmentCredentialOptions(authorityHost: $this->options->authorityHost)
+            ),
+            new WorkloadIdentityCredential(
+                new WorkloadIdentityCredentialOptions(authorityHost: $this->options->authorityHost)
+            ),
+            new ManagedIdentityCredential(
+                new ManagedIdentityCredentialOptions(authorityHost: $this->options->authorityHost)
+            ),
         ]);
     }
 

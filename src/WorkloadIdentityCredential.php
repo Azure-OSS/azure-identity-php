@@ -1,15 +1,18 @@
 <?php
 
+declare(strict_types=1);
+
 namespace AzureOss\Identity;
 
-class WorkloadIdentityCredential implements TokenCredential
+final class WorkloadIdentityCredential implements TokenCredential
 {
-    public function __construct(private WorkloadIdentityCredentialOptions $options = new WorkloadIdentityCredentialOptions)
-    {
-    }
+    public function __construct(
+        /** @phpstan-ignore-next-line */
+        private WorkloadIdentityCredentialOptions $options = new WorkloadIdentityCredentialOptions
+    ) {}
 
     public function getToken(TokenRequestContext $context): AccessToken
     {
-        // TODO: Implement getToken() method.
+        throw new \Exception('Not implemented');
     }
 }

@@ -101,6 +101,10 @@ final class ClientCertificateCredential implements TokenCredential
             throw new \RuntimeException('Failed to sign the JWT assertion');
         }
 
+        if (! is_string($signature)) {
+            throw new \RuntimeException('Failed to sign the JWT assertion');
+        }
+
         $encodedSignature = $this->base64UrlEncode($signature);
 
         return "{$dataToSign}.{$encodedSignature}";
@@ -111,6 +115,10 @@ final class ClientCertificateCredential implements TokenCredential
         $pemString = '';
         if (! openssl_x509_export($certificate, $pemString)) {
             throw new \RuntimeException('Unable to export certificate');
+        }
+
+        if (! is_string($pemString)) {
+            throw new \RuntimeException('Failed to export certificate');
         }
 
         // Remove PEM armor to get raw DER bytes

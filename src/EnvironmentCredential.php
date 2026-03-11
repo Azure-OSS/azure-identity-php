@@ -8,8 +8,7 @@ final class EnvironmentCredential implements TokenCredential
 {
     public function __construct(
         private readonly EnvironmentCredentialOptions $options = new EnvironmentCredentialOptions
-    ) {
-    }
+    ) {}
 
     public function getToken(TokenRequestContext $context): AccessToken
     {

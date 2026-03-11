@@ -1,8 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace AzureOss\Identity;
 
-class ManagedIdentityCredentialOptions extends TokenCredentialOptions
-{
-
-}
+final class ManagedIdentityCredentialOptions extends TokenCredentialOptions {}
