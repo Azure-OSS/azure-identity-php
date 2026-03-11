@@ -4,12 +4,8 @@ declare(strict_types=1);
 
 namespace AzureOss\Identity;
 
-use Firebase\JWT\JWT;
 use GuzzleHttp\Client;
 use GuzzleHttp\RequestOptions;
-use phpseclib3\Crypt\PublicKeyLoader;
-use phpseclib3\Crypt\RSA\PrivateKey as RsaPrivateKey;
-use phpseclib3\File\X509;
 
 final class ClientCertificateCredential implements TokenCredential
 {
@@ -51,11 +47,12 @@ final class ClientCertificateCredential implements TokenCredential
     {
         $material = $this->loadCertificateMaterial();
 
-        $thumbprint = JWT::urlsafeB64Encode(
+        $thumbprint = $this->base64UrlEncode(
             hash('sha256', $material['leafCertificateDer'], true),
         );
 
         $header = [
+            'alg' => 'RS256',
             'typ' => 'JWT',
             'x5t#S256' => $thumbprint,
         ];
@@ -80,23 +77,92 @@ final class ClientCertificateCredential implements TokenCredential
             'exp' => $now + 600,
         ];
 
-        $signingKey = $material['privateKey']->withPassword('');
-        if (! $signingKey instanceof RsaPrivateKey) {
-            throw new \RuntimeException('Unable to prepare private key for signing');
+        $headerEncoded = $this->base64UrlEncode(json_encode($header, JSON_THROW_ON_ERROR));
+        $payloadEncoded = $this->base64UrlEncode(json_encode($payload, JSON_THROW_ON_ERROR));
+
+        $dataToSign = "{$headerEncoded}.{$payloadEncoded}";
+
+        $signature = '';
+        if (! openssl_sign($dataToSign, $signature, $material['privateKey'], OPENSSL_ALGO_SHA256)) {
+            $opensslError = openssl_error_string();
+            throw new \RuntimeException('Failed to sign JWT assertion: '.($opensslError !== false ? $opensslError : 'unknown error'));
         }
 
-        return JWT::encode(
-            $payload,
-            $signingKey->toString('PKCS8'),
-            'RS256',
-            null,
-            $header,
-        );
+        if (! is_string($signature)) {
+            throw new \RuntimeException('Failed to sign JWT assertion: invalid signature format');
+        }
+
+        $signatureEncoded = $this->base64UrlEncode($signature);
+
+        return "{$dataToSign}.{$signatureEncoded}";
     }
 
     /**
      * @return array{
-     *     privateKey: RsaPrivateKey,
+     *     privateKey: \OpenSSLAsymmetricKey,
+     *     leafCertificateDer: string,
+     *     certificateChainDer: list<string>
+     * }
+     */
+    private function loadPkcs12CertificateMaterial(string $pkcs12Contents): array
+    {
+        $pkcs12Data = [];
+        if (! openssl_pkcs12_read($pkcs12Contents, $pkcs12Data, $this->clientCertificatePassword ?? '')) {
+            throw new \RuntimeException(
+                'Unable to decrypt private key. The passphrase may be incorrect or the certificate file is invalid.',
+            );
+        }
+
+        if (! is_array($pkcs12Data)) {
+            throw new \RuntimeException('Unable to parse the PKCS#12 file');
+        }
+
+        /** @var array{cert?: string, pkey?: string, extracerts?: list<string>} $pkcs12Data */
+        $leafCertPem = $pkcs12Data['cert'] ?? null;
+        if (! is_string($leafCertPem)) {
+            throw new \RuntimeException('Unable to parse the certificate from the PKCS#12 file');
+        }
+
+        $privateKeyPem = $pkcs12Data['pkey'] ?? null;
+        if (! is_string($privateKeyPem)) {
+            throw new \RuntimeException(
+                'Unable to decrypt private key. The passphrase may be incorrect or the certificate file is invalid.',
+            );
+        }
+
+        $privateKey = openssl_pkey_get_private($privateKeyPem);
+        if ($privateKey === false) {
+            throw new \RuntimeException('Unable to load private key from PKCS#12 file');
+        }
+
+        $this->assertRsaKey($privateKey);
+
+        $certificateChainDer = $this->parseCertificateDerFromPem($leafCertPem);
+
+        $extraCerts = $pkcs12Data['extracerts'] ?? null;
+        if (is_array($extraCerts)) {
+            foreach ($extraCerts as $extraCertPem) {
+                $certificateChainDer = array_merge(
+                    $certificateChainDer,
+                    $this->parseCertificateDerFromPem($extraCertPem),
+                );
+            }
+        }
+
+        if ($certificateChainDer === []) {
+            throw new \RuntimeException('Unable to parse the certificate from the PKCS#12 file');
+        }
+
+        return [
+            'privateKey' => $privateKey,
+            'leafCertificateDer' => $certificateChainDer[0],
+            'certificateChainDer' => $certificateChainDer,
+        ];
+    }
+
+    /**
+     * @return array{
+     *     privateKey: \OpenSSLAsymmetricKey,
      *     leafCertificateDer: string,
      *     certificateChainDer: list<string>
      * }
@@ -117,7 +183,7 @@ final class ClientCertificateCredential implements TokenCredential
 
     /**
      * @return array{
-     *     privateKey: RsaPrivateKey,
+     *     privateKey: \OpenSSLAsymmetricKey,
      *     leafCertificateDer: string,
      *     certificateChainDer: list<string>
      * }
@@ -126,80 +192,18 @@ final class ClientCertificateCredential implements TokenCredential
     {
         $password = $this->clientCertificatePassword ?? '';
 
-        $privateKey = PublicKeyLoader::load($pemContents, $password);
-        if (! $privateKey instanceof RsaPrivateKey) {
+        $privateKey = openssl_pkey_get_private($pemContents, $password);
+        if ($privateKey === false) {
             throw new \RuntimeException(
                 'Unable to decrypt private key. The passphrase may be incorrect or the certificate file is invalid.',
             );
         }
+
+        $this->assertRsaKey($privateKey);
 
         $certificateChainDer = $this->parseCertificateDerFromPem($pemContents);
         if ($certificateChainDer === []) {
             throw new \RuntimeException('Unable to parse the certificate from the PEM file');
-        }
-
-        return [
-            'privateKey' => $privateKey,
-            'leafCertificateDer' => $certificateChainDer[0],
-            'certificateChainDer' => $certificateChainDer,
-        ];
-    }
-
-    /**
-     * @return array{
-     *     privateKey: RsaPrivateKey,
-     *     leafCertificateDer: string,
-     *     certificateChainDer: list<string>
-     * }
-     */
-    private function loadPkcs12CertificateMaterial(string $pkcs12Contents): array
-    {
-        $pkcs12DataRaw = [];
-        if (! openssl_pkcs12_read($pkcs12Contents, $pkcs12DataRaw, $this->clientCertificatePassword ?? '')) {
-            throw new \RuntimeException(
-                'Unable to decrypt private key. The passphrase may be incorrect or the certificate file is invalid.',
-            );
-        }
-        if (! is_array($pkcs12DataRaw)) {
-            throw new \RuntimeException('Unable to parse the PKCS#12 file');
-        }
-
-        /** @var array<string, mixed> $pkcs12Data */
-        $pkcs12Data = $pkcs12DataRaw;
-
-        $leafCertPem = $pkcs12Data['cert'] ?? null;
-        if (! is_string($leafCertPem)) {
-            throw new \RuntimeException('Unable to parse the certificate from the PKCS#12 file');
-        }
-
-        $privateKeyPem = $pkcs12Data['pkey'] ?? null;
-        if (! is_string($privateKeyPem)) {
-            throw new \RuntimeException(
-                'Unable to decrypt private key. The passphrase may be incorrect or the certificate file is invalid.',
-            );
-        }
-
-        $privateKey = PublicKeyLoader::load($privateKeyPem);
-        if (! $privateKey instanceof RsaPrivateKey) {
-            throw new \RuntimeException('Unable to load private key from PKCS#12 file');
-        }
-
-        $certificateChainDer = $this->parseCertificateDerFromPem($leafCertPem);
-
-        $extraCerts = $pkcs12Data['extracerts'] ?? null;
-        if (is_array($extraCerts)) {
-            foreach ($extraCerts as $extraCertPem) {
-                if (is_string($extraCertPem)) {
-                    $certificateChainDer = array_merge(
-                        $certificateChainDer,
-                        $this->parseCertificateDerFromPem($extraCertPem),
-                    );
-                }
-            }
-        }
-
-        if ($certificateChainDer === []) {
-            throw new \RuntimeException('Unable to parse the certificate from the PKCS#12 file');
         }
 
         return [
@@ -216,7 +220,6 @@ final class ClientCertificateCredential implements TokenCredential
      */
     private function parseCertificateDerFromPem(string $pemContents): array
     {
-        $x509 = new X509;
         $certificates = [];
 
         $matches = [];
@@ -237,7 +240,9 @@ final class ClientCertificateCredential implements TokenCredential
                 throw new \RuntimeException('Failed to decode certificate DER data');
             }
 
-            if ($x509->loadX509($der) === false) {
+            $reconstructedPem = "-----BEGIN CERTIFICATE-----\n".chunk_split(base64_encode($der), 64, "\n")."-----END CERTIFICATE-----\n";
+            $parsed = openssl_x509_parse($reconstructedPem);
+            if ($parsed === false) {
                 throw new \RuntimeException('Unable to parse a certificate from the PEM file');
             }
 
@@ -245,5 +250,22 @@ final class ClientCertificateCredential implements TokenCredential
         }
 
         return $certificates;
+    }
+
+    private function assertRsaKey(\OpenSSLAsymmetricKey $key): void
+    {
+        $details = openssl_pkey_get_details($key);
+        if ($details === false) {
+            throw new \RuntimeException('Unable to read key details');
+        }
+
+        if (($details['type'] ?? null) !== OPENSSL_KEYTYPE_RSA) {
+            throw new \RuntimeException('Only RSA keys are supported for client certificate authentication');
+        }
+    }
+
+    private function base64UrlEncode(string $data): string
+    {
+        return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
     }
 }
