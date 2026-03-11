@@ -8,7 +8,7 @@ use Firebase\JWT\JWT;
 use GuzzleHttp\Client;
 use GuzzleHttp\RequestOptions;
 use phpseclib3\Crypt\PublicKeyLoader;
-use phpseclib3\Crypt\RSA\PrivateKey;
+use phpseclib3\Crypt\RSA\PrivateKey as RsaPrivateKey;
 use phpseclib3\File\X509;
 
 final class ClientCertificateCredential implements TokenCredential
@@ -52,12 +52,12 @@ final class ClientCertificateCredential implements TokenCredential
         $material = $this->loadCertificateMaterial();
 
         $thumbprint = JWT::urlsafeB64Encode(
-            hash('sha1', $material['leafCertificateDer'], true),
+            hash('sha256', $material['leafCertificateDer'], true),
         );
 
         $header = [
             'typ' => 'JWT',
-            'x5t' => $thumbprint,
+            'x5t#S256' => $thumbprint,
         ];
 
         if ($this->options->sendCertificateChain) {
@@ -81,7 +81,7 @@ final class ClientCertificateCredential implements TokenCredential
         ];
 
         $signingKey = $material['privateKey']->withPassword('');
-        if (! $signingKey instanceof PrivateKey) {
+        if (! $signingKey instanceof RsaPrivateKey) {
             throw new \RuntimeException('Unable to prepare private key for signing');
         }
 
@@ -96,7 +96,7 @@ final class ClientCertificateCredential implements TokenCredential
 
     /**
      * @return array{
-     *     privateKey: PrivateKey,
+     *     privateKey: RsaPrivateKey,
      *     leafCertificateDer: string,
      *     certificateChainDer: list<string>
      * }
@@ -108,7 +108,7 @@ final class ClientCertificateCredential implements TokenCredential
             throw new \RuntimeException("Unable to read certificate file: {$this->clientCertificatePath}");
         }
 
-        if (str_contains($contents, '-----BEGIN')) {
+        if (preg_match('/-----BEGIN (CERTIFICATE|PRIVATE KEY|RSA PRIVATE KEY|ENCRYPTED PRIVATE KEY)-----/', $contents) === 1) {
             return $this->loadPemCertificateMaterial($contents);
         }
 
@@ -117,7 +117,7 @@ final class ClientCertificateCredential implements TokenCredential
 
     /**
      * @return array{
-     *     privateKey: PrivateKey,
+     *     privateKey: RsaPrivateKey,
      *     leafCertificateDer: string,
      *     certificateChainDer: list<string>
      * }
@@ -127,7 +127,7 @@ final class ClientCertificateCredential implements TokenCredential
         $password = $this->clientCertificatePassword ?? '';
 
         $privateKey = PublicKeyLoader::load($pemContents, $password);
-        if (! $privateKey instanceof PrivateKey) {
+        if (! $privateKey instanceof RsaPrivateKey) {
             throw new \RuntimeException(
                 'Unable to decrypt private key. The passphrase may be incorrect or the certificate file is invalid.',
             );
@@ -147,7 +147,7 @@ final class ClientCertificateCredential implements TokenCredential
 
     /**
      * @return array{
-     *     privateKey: PrivateKey,
+     *     privateKey: RsaPrivateKey,
      *     leafCertificateDer: string,
      *     certificateChainDer: list<string>
      * }
@@ -180,7 +180,7 @@ final class ClientCertificateCredential implements TokenCredential
         }
 
         $privateKey = PublicKeyLoader::load($privateKeyPem);
-        if (! $privateKey instanceof PrivateKey) {
+        if (! $privateKey instanceof RsaPrivateKey) {
             throw new \RuntimeException('Unable to load private key from PKCS#12 file');
         }
 
