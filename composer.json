@@ -1,0 +1,33 @@
+{
+  "name": "azure-oss/identity",
+  "type": "library",
+  "require": {
+    "php": "^8.1",
+    "guzzlehttp/guzzle": "^7.10",
+    "ext-openssl": "*"
+  },
+  "autoload": {
+    "psr-4": {
+      "AzureOss\\Identity\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "AzureOss\\Identity\\Tests\\": "tests/"
+    }
+  },
+  "require-dev": {
+    "phpstan/phpstan": "^2.1",
+    "phpstan/phpstan-deprecation-rules": "^2.0",
+    "phpstan/phpstan-phpunit": "^2.0",
+    "phpstan/extension-installer": "^1.4",
+    "phpstan/phpstan-strict-rules": "^2.0",
+    "laravel/pint": "^1.27",
+    "phpunit/phpunit": "^13.0"
+  },
+  "config": {
+    "allow-plugins": {
+      "phpstan/extension-installer": true
+    }
+  }
+}
