@@ -6,30 +6,107 @@ namespace AzureOss\Identity\Tests;
 
 use AzureOss\Identity\AuthenticationFailedException;
 use AzureOss\Identity\ClientCertificateCredential;
+use AzureOss\Identity\ClientCertificateCredentialOptions;
 use AzureOss\Identity\TokenRequestContext;
 use PHPUnit\Framework\Attributes\Test;
 use PHPUnit\Framework\TestCase;
 
 class ClientCertificateCredentialTest extends TestCase
 {
+    private const GRAPH_SCOPE = 'https://graph.microsoft.com/.default';
+
     #[Test]
-    public function get_token_works(): void
+    public function get_token_works_with_fixture_pem_unencrypted(): void
     {
-        $tenantId = getenv('AZURE_TENANT_ID');
-        $clientId = getenv('AZURE_CLIENT_ID');
+        [$tenantId, $clientId] = $this->azureApplicationIdentity();
 
-        if ($tenantId === false || $clientId === false) {
-            self::markTestSkipped('Not all env variables have been set for this test');
-        }
+        $credential = new ClientCertificateCredential(
+            $tenantId,
+            $clientId,
+            $this->fixturePath('client-cert-pem-unencrypted.pem'),
+        );
 
-        $clientCertificatePath = __DIR__.'/fixtures/test-cert.pem';
-
-        $credential = new ClientCertificateCredential($tenantId, $clientId, $clientCertificatePath);
-        $token = $credential->getToken(new TokenRequestContext(['https://graph.microsoft.com/.default']));
+        $token = $credential->getToken(new TokenRequestContext([self::GRAPH_SCOPE]));
 
         self::assertGreaterThan(0, strlen($token->token));
         self::assertGreaterThan((new \DateTimeImmutable)->getTimestamp(), $token->expiresOn->getTimestamp());
-        self::assertEquals('Bearer', $token->tokenType);
+        self::assertSame('Bearer', $token->tokenType);
+    }
+
+    #[Test]
+    public function get_token_works_with_fixture_pem_encrypted(): void
+    {
+        [$tenantId, $clientId] = $this->azureApplicationIdentity();
+
+        $credential = new ClientCertificateCredential(
+            $tenantId,
+            $clientId,
+            $this->fixturePath('client-cert-pem-encrypted.pem'),
+            'fixture-pem-pass',
+        );
+
+        $token = $credential->getToken(new TokenRequestContext([self::GRAPH_SCOPE]));
+
+        self::assertGreaterThan(0, strlen($token->token));
+        self::assertGreaterThan((new \DateTimeImmutable)->getTimestamp(), $token->expiresOn->getTimestamp());
+        self::assertSame('Bearer', $token->tokenType);
+    }
+
+    #[Test]
+    public function get_token_works_with_fixture_pfx_without_password(): void
+    {
+        [$tenantId, $clientId] = $this->azureApplicationIdentity();
+
+        $credential = new ClientCertificateCredential(
+            $tenantId,
+            $clientId,
+            $this->fixturePath('client-cert-pfx-no-password.pfx'),
+        );
+
+        $token = $credential->getToken(new TokenRequestContext([self::GRAPH_SCOPE]));
+
+        self::assertGreaterThan(0, strlen($token->token));
+        self::assertGreaterThan((new \DateTimeImmutable)->getTimestamp(), $token->expiresOn->getTimestamp());
+        self::assertSame('Bearer', $token->tokenType);
+    }
+
+    #[Test]
+    public function get_token_works_with_fixture_pfx_with_password(): void
+    {
+        [$tenantId, $clientId] = $this->azureApplicationIdentity();
+
+        $credential = new ClientCertificateCredential(
+            $tenantId,
+            $clientId,
+            $this->fixturePath('client-cert-pfx-password.pfx'),
+            'fixture-pfx-pass',
+        );
+
+        $token = $credential->getToken(new TokenRequestContext([self::GRAPH_SCOPE]));
+
+        self::assertGreaterThan(0, strlen($token->token));
+        self::assertGreaterThan((new \DateTimeImmutable)->getTimestamp(), $token->expiresOn->getTimestamp());
+        self::assertSame('Bearer', $token->tokenType);
+    }
+
+    #[Test]
+    public function get_token_works_with_fixture_pem_chain_and_send_certificate_chain(): void
+    {
+        [$tenantId, $clientId] = $this->azureApplicationIdentity();
+
+        $credential = new ClientCertificateCredential(
+            $tenantId,
+            $clientId,
+            $this->fixturePath('client-cert-pem-chain.pem'),
+            null,
+            new ClientCertificateCredentialOptions(sendCertificateChain: true),
+        );
+
+        $token = $credential->getToken(new TokenRequestContext([self::GRAPH_SCOPE]));
+
+        self::assertGreaterThan(0, strlen($token->token));
+        self::assertGreaterThan((new \DateTimeImmutable)->getTimestamp(), $token->expiresOn->getTimestamp());
+        self::assertSame('Bearer', $token->tokenType);
     }
 
     #[Test]
@@ -37,7 +114,30 @@ class ClientCertificateCredentialTest extends TestCase
     {
         $this->expectException(AuthenticationFailedException::class);
 
-        (new ClientCertificateCredential('invalid', 'invalid', '/nonexistent/path.pem'))
-            ->getToken(new TokenRequestContext(['https://graph.microsoft.com/.default']));
+        (new ClientCertificateCredential(
+            'invalid-tenant',
+            'invalid-client',
+            $this->fixturePath('client-cert-pem-unencrypted.pem'),
+        ))->getToken(new TokenRequestContext([self::GRAPH_SCOPE]));
+    }
+
+    /**
+     * @return array{0: string, 1: string}
+     */
+    private function azureApplicationIdentity(): array
+    {
+        $tenantId = getenv('AZURE_TENANT_ID');
+        $clientId = getenv('AZURE_CLIENT_ID');
+
+        if ($tenantId === false || $clientId === false) {
+            self::markTestSkipped('AZURE_TENANT_ID and AZURE_CLIENT_ID must be set for certificate integration tests');
+        }
+
+        return [$tenantId, $clientId];
+    }
+
+    private function fixturePath(string $file): string
+    {
+        return __DIR__.'/fixtures/'.$file;
     }
 }

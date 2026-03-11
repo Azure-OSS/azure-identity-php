@@ -41,10 +41,13 @@ final class EnvironmentCredential implements TokenCredential
 
         $clientCertificatePath = getenv('AZURE_CLIENT_CERTIFICATE_PATH');
         if ($clientCertificatePath !== false) {
+            $clientCertificatePassword = getenv('AZURE_CLIENT_CERTIFICATE_PASSWORD');
+
             return new ClientCertificateCredential(
                 $tenantId,
                 $clientId,
                 $clientCertificatePath,
+                $clientCertificatePassword !== false ? $clientCertificatePassword : null,
                 new ClientCertificateCredentialOptions(authorityHost: $this->options->authorityHost)
             );
         }

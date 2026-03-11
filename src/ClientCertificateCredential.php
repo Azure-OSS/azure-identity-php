@@ -4,8 +4,12 @@ declare(strict_types=1);
 
 namespace AzureOss\Identity;
 
+use Firebase\JWT\JWT;
 use GuzzleHttp\Client;
 use GuzzleHttp\RequestOptions;
+use phpseclib3\Crypt\PublicKeyLoader;
+use phpseclib3\Crypt\RSA\PrivateKey;
+use phpseclib3\File\X509;
 
 final class ClientCertificateCredential implements TokenCredential
 {
@@ -13,6 +17,7 @@ final class ClientCertificateCredential implements TokenCredential
         private readonly string $tenantId,
         private readonly string $clientId,
         private readonly string $clientCertificatePath,
+        private readonly ?string $clientCertificatePassword = null,
         private readonly ClientCertificateCredentialOptions $options = new ClientCertificateCredentialOptions,
     ) {}
 
@@ -44,38 +49,27 @@ final class ClientCertificateCredential implements TokenCredential
 
     private function createClientAssertion(): string
     {
-        $pemContents = file_get_contents($this->clientCertificatePath);
+        $material = $this->loadCertificateMaterial();
 
-        if ($pemContents === false) {
-            throw new \RuntimeException("Unable to read certificate file: {$this->clientCertificatePath}");
-        }
+        $thumbprint = JWT::urlsafeB64Encode(
+            hash('sha1', $material['leafCertificateDer'], true),
+        );
 
-        // Extract the certificate
-        $certificate = openssl_x509_read($pemContents);
-        if ($certificate === false) {
-            throw new \RuntimeException('Unable to parse the certificate from the PEM file');
-        }
-
-        // Extract the private key
-        $privateKey = openssl_pkey_get_private($pemContents);
-        if ($privateKey === false) {
-            throw new \RuntimeException('Unable to extract private key from the PEM file');
-        }
-
-        // Compute the x5t (X.509 certificate SHA-1 thumbprint)
-        $thumbprint = $this->getCertificateThumbprint($certificate);
-
-        // Build the JWT header
         $header = [
-            'alg' => 'RS256',
             'typ' => 'JWT',
             'x5t' => $thumbprint,
         ];
 
+        if ($this->options->sendCertificateChain) {
+            $header['x5c'] = array_map(
+                fn (string $der): string => base64_encode($der),
+                $material['certificateChainDer'],
+            );
+        }
+
         $tokenEndpoint = "https://{$this->options->authorityHost}/{$this->tenantId}/oauth2/v2.0/token";
         $now = time();
 
-        // Build the JWT payload
         $payload = [
             'aud' => $tokenEndpoint,
             'iss' => $this->clientId,
@@ -86,58 +80,170 @@ final class ClientCertificateCredential implements TokenCredential
             'exp' => $now + 600,
         ];
 
-        // Encode header and payload
-        $headerJson = json_encode($header, JSON_THROW_ON_ERROR);
-        $payloadJson = json_encode($payload, JSON_THROW_ON_ERROR);
-
-        $encodedHeader = $this->base64UrlEncode($headerJson);
-        $encodedPayload = $this->base64UrlEncode($payloadJson);
-
-        $dataToSign = "{$encodedHeader}.{$encodedPayload}";
-
-        // Sign with the private key
-        $signature = '';
-        if (! openssl_sign($dataToSign, $signature, $privateKey, OPENSSL_ALGO_SHA256)) {
-            throw new \RuntimeException('Failed to sign the JWT assertion');
+        $signingKey = $material['privateKey']->withPassword('');
+        if (! $signingKey instanceof PrivateKey) {
+            throw new \RuntimeException('Unable to prepare private key for signing');
         }
 
-        if (! is_string($signature)) {
-            throw new \RuntimeException('Failed to sign the JWT assertion');
-        }
-
-        $encodedSignature = $this->base64UrlEncode($signature);
-
-        return "{$dataToSign}.{$encodedSignature}";
+        return JWT::encode(
+            $payload,
+            $signingKey->toString('PKCS8'),
+            'RS256',
+            null,
+            $header,
+        );
     }
 
-    private function getCertificateThumbprint(\OpenSSLCertificate $certificate): string
+    /**
+     * @return array{
+     *     privateKey: PrivateKey,
+     *     leafCertificateDer: string,
+     *     certificateChainDer: list<string>
+     * }
+     */
+    private function loadCertificateMaterial(): array
     {
-        $pemString = '';
-        if (! openssl_x509_export($certificate, $pemString)) {
-            throw new \RuntimeException('Unable to export certificate');
+        $contents = file_get_contents($this->clientCertificatePath);
+        if ($contents === false) {
+            throw new \RuntimeException("Unable to read certificate file: {$this->clientCertificatePath}");
         }
 
-        if (! is_string($pemString)) {
-            throw new \RuntimeException('Failed to export certificate');
+        if (str_contains($contents, '-----BEGIN')) {
+            return $this->loadPemCertificateMaterial($contents);
         }
 
-        // Remove PEM armor to get raw DER bytes
-        $stripped = preg_replace('/-----BEGIN CERTIFICATE-----|-----END CERTIFICATE-----|\s/', '', $pemString);
-        if (! is_string($stripped)) {
-            throw new \RuntimeException('Failed to strip PEM headers');
-        }
-
-        $derBytes = base64_decode($stripped, true);
-        if ($derBytes === false) {
-            throw new \RuntimeException('Failed to decode certificate DER data');
-        }
-
-        // SHA-1 thumbprint, base64url-encoded (this is the x5t format)
-        return $this->base64UrlEncode(hash('sha1', $derBytes, true));
+        return $this->loadPkcs12CertificateMaterial($contents);
     }
 
-    private function base64UrlEncode(string $data): string
+    /**
+     * @return array{
+     *     privateKey: PrivateKey,
+     *     leafCertificateDer: string,
+     *     certificateChainDer: list<string>
+     * }
+     */
+    private function loadPemCertificateMaterial(string $pemContents): array
     {
-        return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
+        $password = $this->clientCertificatePassword ?? '';
+
+        $privateKey = PublicKeyLoader::load($pemContents, $password);
+        if (! $privateKey instanceof PrivateKey) {
+            throw new \RuntimeException(
+                'Unable to decrypt private key. The passphrase may be incorrect or the certificate file is invalid.',
+            );
+        }
+
+        $certificateChainDer = $this->parseCertificateDerFromPem($pemContents);
+        if ($certificateChainDer === []) {
+            throw new \RuntimeException('Unable to parse the certificate from the PEM file');
+        }
+
+        return [
+            'privateKey' => $privateKey,
+            'leafCertificateDer' => $certificateChainDer[0],
+            'certificateChainDer' => $certificateChainDer,
+        ];
+    }
+
+    /**
+     * @return array{
+     *     privateKey: PrivateKey,
+     *     leafCertificateDer: string,
+     *     certificateChainDer: list<string>
+     * }
+     */
+    private function loadPkcs12CertificateMaterial(string $pkcs12Contents): array
+    {
+        $pkcs12DataRaw = [];
+        if (! openssl_pkcs12_read($pkcs12Contents, $pkcs12DataRaw, $this->clientCertificatePassword ?? '')) {
+            throw new \RuntimeException(
+                'Unable to decrypt private key. The passphrase may be incorrect or the certificate file is invalid.',
+            );
+        }
+        if (! is_array($pkcs12DataRaw)) {
+            throw new \RuntimeException('Unable to parse the PKCS#12 file');
+        }
+
+        /** @var array<string, mixed> $pkcs12Data */
+        $pkcs12Data = $pkcs12DataRaw;
+
+        $leafCertPem = $pkcs12Data['cert'] ?? null;
+        if (! is_string($leafCertPem)) {
+            throw new \RuntimeException('Unable to parse the certificate from the PKCS#12 file');
+        }
+
+        $privateKeyPem = $pkcs12Data['pkey'] ?? null;
+        if (! is_string($privateKeyPem)) {
+            throw new \RuntimeException(
+                'Unable to decrypt private key. The passphrase may be incorrect or the certificate file is invalid.',
+            );
+        }
+
+        $privateKey = PublicKeyLoader::load($privateKeyPem);
+        if (! $privateKey instanceof PrivateKey) {
+            throw new \RuntimeException('Unable to load private key from PKCS#12 file');
+        }
+
+        $certificateChainDer = $this->parseCertificateDerFromPem($leafCertPem);
+
+        $extraCerts = $pkcs12Data['extracerts'] ?? null;
+        if (is_array($extraCerts)) {
+            foreach ($extraCerts as $extraCertPem) {
+                if (is_string($extraCertPem)) {
+                    $certificateChainDer = array_merge(
+                        $certificateChainDer,
+                        $this->parseCertificateDerFromPem($extraCertPem),
+                    );
+                }
+            }
+        }
+
+        if ($certificateChainDer === []) {
+            throw new \RuntimeException('Unable to parse the certificate from the PKCS#12 file');
+        }
+
+        return [
+            'privateKey' => $privateKey,
+            'leafCertificateDer' => $certificateChainDer[0],
+            'certificateChainDer' => $certificateChainDer,
+        ];
+    }
+
+    /**
+     * Parse PEM content and return DER-encoded bytes for each certificate found.
+     *
+     * @return list<string>
+     */
+    private function parseCertificateDerFromPem(string $pemContents): array
+    {
+        $x509 = new X509;
+        $certificates = [];
+
+        $matches = [];
+        preg_match_all(
+            '/-----BEGIN CERTIFICATE-----(.+?)-----END CERTIFICATE-----/s',
+            $pemContents,
+            $matches,
+        );
+
+        foreach ($matches[1] as $base64Content) {
+            $stripped = preg_replace('/\s+/', '', $base64Content);
+            if (! is_string($stripped)) {
+                throw new \RuntimeException('Failed to process certificate data');
+            }
+
+            $der = base64_decode($stripped, true);
+            if ($der === false || $der === '') {
+                throw new \RuntimeException('Failed to decode certificate DER data');
+            }
+
+            if ($x509->loadX509($der) === false) {
+                throw new \RuntimeException('Unable to parse a certificate from the PEM file');
+            }
+
+            $certificates[] = $der;
+        }
+
+        return $certificates;
     }
 }
