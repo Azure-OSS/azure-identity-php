@@ -282,7 +282,7 @@ final class ManagedIdentityCredential implements TokenCredential
     }
 
     /**
-     * @param array<string, mixed> $query
+     * @param  array<string, mixed>  $query
      */
     private static function appendQuery(string $url, array $query): string
     {
