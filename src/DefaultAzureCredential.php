@@ -15,19 +15,34 @@ final class DefaultAzureCredential implements TokenCredential
 
         if (! $this->options->excludeEnvironmentCredential) {
             $sources[] = new EnvironmentCredential(
-                new EnvironmentCredentialOptions(authorityHost: $this->options->authorityHost)
+                new EnvironmentCredentialOptions(
+                    authorityHost: $this->options->authorityHost,
+                    httpClient: $this->options->httpClient,
+                    requestFactory: $this->options->requestFactory,
+                    streamFactory: $this->options->streamFactory,
+                )
             );
         }
 
         if (! $this->options->excludeWorkloadIdentityCredential) {
             $sources[] = new WorkloadIdentityCredential(
-                new WorkloadIdentityCredentialOptions(authorityHost: $this->options->authorityHost)
+                new WorkloadIdentityCredentialOptions(
+                    authorityHost: $this->options->authorityHost,
+                    httpClient: $this->options->httpClient,
+                    requestFactory: $this->options->requestFactory,
+                    streamFactory: $this->options->streamFactory,
+                )
             );
         }
 
         if (! $this->options->excludeManagedIdentityCredential) {
             $sources[] = new ManagedIdentityCredential(
-                new ManagedIdentityCredentialOptions(authorityHost: $this->options->authorityHost)
+                new ManagedIdentityCredentialOptions(
+                    authorityHost: $this->options->authorityHost,
+                    httpClient: $this->options->httpClient,
+                    requestFactory: $this->options->requestFactory,
+                    streamFactory: $this->options->streamFactory,
+                )
             );
         }
 

@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace AzureOss\Identity;
 
+use Psr\Http\Client\ClientInterface;
+use Psr\Http\Message\RequestFactoryInterface;
+use Psr\Http\Message\StreamFactoryInterface;
+
 final class DefaultAzureCredentialOptions extends TokenCredentialOptions
 {
     public function __construct(
@@ -18,7 +22,10 @@ final class DefaultAzureCredentialOptions extends TokenCredentialOptions
         public readonly bool $excludeVisualStudioCredential = false,
         public readonly bool $excludeVisualStudioCodeCredential = false,
         public readonly bool $excludeBrokerCredential = false,
+        ?ClientInterface $httpClient = null,
+        ?RequestFactoryInterface $requestFactory = null,
+        ?StreamFactoryInterface $streamFactory = null,
     ) {
-        parent::__construct($authorityHost);
+        parent::__construct($authorityHost, $httpClient, $requestFactory, $streamFactory);
     }
 }

@@ -35,7 +35,12 @@ final class EnvironmentCredential implements TokenCredential
                 $tenantId,
                 $clientId,
                 $clientSecret,
-                new ClientSecretCredentialOptions(authorityHost: $this->options->authorityHost)
+                new ClientSecretCredentialOptions(
+                    authorityHost: $this->options->authorityHost,
+                    httpClient: $this->options->httpClient,
+                    requestFactory: $this->options->requestFactory,
+                    streamFactory: $this->options->streamFactory,
+                )
             );
         }
 
@@ -48,7 +53,12 @@ final class EnvironmentCredential implements TokenCredential
                 $clientId,
                 $clientCertificatePath,
                 $clientCertificatePassword !== false ? $clientCertificatePassword : null,
-                new ClientCertificateCredentialOptions(authorityHost: $this->options->authorityHost)
+                new ClientCertificateCredentialOptions(
+                    authorityHost: $this->options->authorityHost,
+                    httpClient: $this->options->httpClient,
+                    requestFactory: $this->options->requestFactory,
+                    streamFactory: $this->options->streamFactory,
+                )
             );
         }
 

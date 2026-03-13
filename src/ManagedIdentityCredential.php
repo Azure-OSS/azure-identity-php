@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace AzureOss\Identity;
 
-use GuzzleHttp\Client;
-use GuzzleHttp\Exception\ConnectException;
-use GuzzleHttp\Exception\RequestException;
-use GuzzleHttp\RequestOptions;
+use Http\Discovery\Exception\NotFoundException;
+use Http\Discovery\Psr17FactoryDiscovery;
+use Http\Discovery\Psr18ClientDiscovery;
+use Psr\Http\Client\ClientExceptionInterface;
+use Psr\Http\Client\ClientInterface;
+use Psr\Http\Client\NetworkExceptionInterface;
+use Psr\Http\Message\RequestFactoryInterface;
 use Psr\Http\Message\ResponseInterface;
 
 /**
@@ -77,29 +80,31 @@ final class ManagedIdentityCredential implements TokenCredential
 
     private function getTokenFromImds(string $resource, ?string $clientId): AccessToken
     {
-        $client = $this->createHttpClient();
+        try {
+            $client = $this->options->httpClient ?? Psr18ClientDiscovery::find();
+            $requestFactory = $this->options->requestFactory ?? Psr17FactoryDiscovery::findRequestFactory();
+        } catch (NotFoundException $e) {
+            throw new \LogicException(
+                'Unable to discover a PSR-18 HTTP client and/or PSR-17 factories. '
+                .'Either provide TokenCredentialOptions::$httpClient/$requestFactory or install compatible implementations (e.g. guzzlehttp/guzzle + guzzlehttp/psr7).',
+                previous: $e,
+            );
+        }
 
         try {
-            $response = $client->get(self::IMDS_ENDPOINT, [
-                RequestOptions::HEADERS => [
-                    'Metadata' => 'true',
-                ],
-                RequestOptions::QUERY => array_filter([
-                    'api-version' => self::IMDS_API_VERSION,
-                    'resource' => $resource,
-                    'client_id' => $clientId,
-                ], static fn ($value) => $value !== null),
-                RequestOptions::HTTP_ERRORS => false,
-            ]);
+            $url = self::appendQuery(self::IMDS_ENDPOINT, array_filter([
+                'api-version' => self::IMDS_API_VERSION,
+                'resource' => $resource,
+                'client_id' => $clientId,
+            ], static fn ($value) => $value !== null));
+
+            $request = $requestFactory->createRequest('GET', $url)->withHeader('Metadata', 'true');
+            $response = $client->sendRequest($request);
 
             return $this->handleImdsResponse($response);
-        } catch (ConnectException $e) {
+        } catch (NetworkExceptionInterface $e) {
             throw new CredentialUnavailableException('Managed identity authentication unavailable. No response from the IMDS endpoint.', previous: $e);
-        } catch (RequestException $e) {
-            if ($e->getResponse() === null) {
-                throw new CredentialUnavailableException('Managed identity authentication unavailable. No response from the IMDS endpoint.', previous: $e);
-            }
-
+        } catch (ClientExceptionInterface $e) {
             throw new AuthenticationFailedException('Failed to authenticate using managed identity (IMDS).', previous: $e);
         } catch (\Throwable $e) {
             throw new AuthenticationFailedException('Failed to authenticate using managed identity (IMDS).', previous: $e);
@@ -124,10 +129,11 @@ final class ManagedIdentityCredential implements TokenCredential
 
     private function getTokenFromAppService(string $resource, string $identityEndpoint, string $identityHeader, ?string $clientId): AccessToken
     {
-        $client = $this->createHttpClient();
+        [$client, $requestFactory] = $this->discoverClientAndRequestFactory();
 
         $response = $this->requestToken(
             $client,
+            $requestFactory,
             $identityEndpoint,
             [
                 'X-IDENTITY-HEADER' => $identityHeader,
@@ -145,7 +151,7 @@ final class ManagedIdentityCredential implements TokenCredential
 
     private function getTokenFromMsiEndpoint(string $resource, string $msiEndpoint, ?string $msiSecret, ?string $clientId): AccessToken
     {
-        $client = $this->createHttpClient();
+        [$client, $requestFactory] = $this->discoverClientAndRequestFactory();
 
         $headers = [];
         if (is_string($msiSecret)) {
@@ -154,6 +160,7 @@ final class ManagedIdentityCredential implements TokenCredential
 
         $response = $this->requestToken(
             $client,
+            $requestFactory,
             $msiEndpoint,
             $headers,
             array_filter([
@@ -169,26 +176,19 @@ final class ManagedIdentityCredential implements TokenCredential
 
     private function getTokenFromAzureArc(string $resource, string $identityEndpoint): AccessToken
     {
-        $client = $this->createHttpClient();
+        [$client, $requestFactory] = $this->discoverClientAndRequestFactory();
 
         try {
-            $response = $client->get($identityEndpoint, [
-                RequestOptions::HEADERS => [
-                    'Metadata' => 'true',
-                ],
-                RequestOptions::QUERY => [
-                    'api-version' => self::ARC_API_VERSION,
-                    'resource' => $resource,
-                ],
-                RequestOptions::HTTP_ERRORS => false,
+            $url = self::appendQuery($identityEndpoint, [
+                'api-version' => self::ARC_API_VERSION,
+                'resource' => $resource,
             ]);
-        } catch (ConnectException $e) {
-            throw new CredentialUnavailableException('Managed identity authentication unavailable. No response from the Azure Arc endpoint.', previous: $e);
-        } catch (RequestException $e) {
-            if ($e->getResponse() === null) {
-                throw new CredentialUnavailableException('Managed identity authentication unavailable. No response from the Azure Arc endpoint.', previous: $e);
-            }
 
+            $request = $requestFactory->createRequest('GET', $url)->withHeader('Metadata', 'true');
+            $response = $client->sendRequest($request);
+        } catch (NetworkExceptionInterface $e) {
+            throw new CredentialUnavailableException('Managed identity authentication unavailable. No response from the Azure Arc endpoint.', previous: $e);
+        } catch (ClientExceptionInterface $e) {
             throw new AuthenticationFailedException('Failed to authenticate using managed identity (Azure Arc).', previous: $e);
         } catch (\Throwable $e) {
             throw new AuthenticationFailedException('Failed to authenticate using managed identity (Azure Arc).', previous: $e);
@@ -214,6 +214,7 @@ final class ManagedIdentityCredential implements TokenCredential
 
         $authResponse = $this->requestToken(
             $client,
+            $requestFactory,
             $identityEndpoint,
             [
                 'Metadata' => 'true',
@@ -233,21 +234,20 @@ final class ManagedIdentityCredential implements TokenCredential
      * @param  array<string, string>  $headers
      * @param  array<string, mixed>  $query
      */
-    private function requestToken(Client $client, string $url, array $headers, array $query, string $source): ResponseInterface
+    private function requestToken(ClientInterface $client, RequestFactoryInterface $requestFactory, string $url, array $headers, array $query, string $source): ResponseInterface
     {
         try {
-            $response = $client->get($url, [
-                RequestOptions::HEADERS => $headers,
-                RequestOptions::QUERY => $query,
-                RequestOptions::HTTP_ERRORS => false,
-            ]);
-        } catch (ConnectException $e) {
-            throw new CredentialUnavailableException("Managed identity authentication unavailable. No response from the {$source} endpoint.", previous: $e);
-        } catch (RequestException $e) {
-            if ($e->getResponse() === null) {
-                throw new CredentialUnavailableException("Managed identity authentication unavailable. No response from the {$source} endpoint.", previous: $e);
+            $url = self::appendQuery($url, $query);
+
+            $request = $requestFactory->createRequest('GET', $url);
+            foreach ($headers as $name => $value) {
+                $request = $request->withHeader($name, $value);
             }
 
+            $response = $client->sendRequest($request);
+        } catch (NetworkExceptionInterface $e) {
+            throw new CredentialUnavailableException("Managed identity authentication unavailable. No response from the {$source} endpoint.", previous: $e);
+        } catch (ClientExceptionInterface $e) {
             throw new AuthenticationFailedException("Failed to authenticate using {$source}.", previous: $e);
         } catch (\Throwable $e) {
             throw new AuthenticationFailedException("Failed to authenticate using {$source}.", previous: $e);
@@ -260,6 +260,42 @@ final class ManagedIdentityCredential implements TokenCredential
         }
 
         return $response;
+    }
+
+    /**
+     * @return array{0: ClientInterface, 1: RequestFactoryInterface}
+     */
+    private function discoverClientAndRequestFactory(): array
+    {
+        try {
+            $client = $this->options->httpClient ?? Psr18ClientDiscovery::find();
+            $requestFactory = $this->options->requestFactory ?? Psr17FactoryDiscovery::findRequestFactory();
+        } catch (NotFoundException $e) {
+            throw new \LogicException(
+                'Unable to discover a PSR-18 HTTP client and/or PSR-17 factories. '
+                .'Either provide TokenCredentialOptions::$httpClient/$requestFactory or install compatible implementations (e.g. guzzlehttp/guzzle + guzzlehttp/psr7).',
+                previous: $e,
+            );
+        }
+
+        return [$client, $requestFactory];
+    }
+
+    /**
+     * @param array<string, mixed> $query
+     */
+    private static function appendQuery(string $url, array $query): string
+    {
+        if ($query === []) {
+            return $url;
+        }
+
+        $encoded = http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+        if ($encoded === '') {
+            return $url;
+        }
+
+        return $url.(str_contains($url, '?') ? '&' : '?').$encoded;
     }
 
     private function scopeToResource(TokenRequestContext $context): string
@@ -324,11 +360,6 @@ final class ManagedIdentityCredential implements TokenCredential
         }
 
         return $secret;
-    }
-
-    private function createHttpClient(): Client
-    {
-        return new Client;
     }
 
     private function getStringEnv(string $name): ?string
