@@ -17,11 +17,21 @@ final class AccessToken
     {
         $data = json_decode($responseBody, true);
 
-        if (! is_array($data) ||
-            ! array_key_exists('access_token', $data) ||
-            ! is_string($data['access_token']) ||
-            ! array_key_exists('expires_in', $data) ||
-            ! is_numeric($data['expires_in']) ||
+        if (! is_array($data) || ! array_key_exists('access_token', $data) || ! is_string($data['access_token'])) {
+            throw new \RuntimeException('Unexpected response from Azure');
+        }
+
+        $expiresOn = null;
+        if (array_key_exists('expires_in', $data) && is_numeric($data['expires_in'])) {
+            $expiresOn = (new \DateTimeImmutable)->modify("+{$data['expires_in']} seconds");
+        } elseif (array_key_exists('expires_on', $data)) {
+            $rawExpiresOn = $data['expires_on'];
+            if (is_int($rawExpiresOn) || is_float($rawExpiresOn) || is_string($rawExpiresOn)) {
+                $expiresOn = self::parseExpiresOn($rawExpiresOn);
+            }
+        }
+
+        if (! $expiresOn instanceof \DateTimeInterface ||
             ! array_key_exists('token_type', $data) ||
             ! is_string($data['token_type'])
         ) {
@@ -30,8 +40,28 @@ final class AccessToken
 
         return new self(
             $data['access_token'],
-            (new \DateTimeImmutable)->modify("+{$data['expires_in']} seconds"),
+            $expiresOn,
             $data['token_type'],
         );
+    }
+
+    private static function parseExpiresOn(string|int|float $expiresOn): \DateTimeImmutable
+    {
+        if (is_numeric($expiresOn)) {
+            return (new \DateTimeImmutable)->setTimestamp((int) $expiresOn);
+        }
+
+        $expiresOn = trim($expiresOn);
+        if ($expiresOn === '') {
+            throw new \RuntimeException('Unexpected response from Azure');
+        }
+
+        if (is_numeric($expiresOn)) {
+            return (new \DateTimeImmutable)->setTimestamp((int) $expiresOn);
+        }
+
+        $date = new \DateTimeImmutable($expiresOn);
+
+        return $date;
     }
 }

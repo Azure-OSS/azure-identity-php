@@ -11,17 +11,27 @@ final class DefaultAzureCredential implements TokenCredential
     public function __construct(
         private readonly DefaultAzureCredentialOptions $options = new DefaultAzureCredentialOptions
     ) {
-        $this->chain = new ChainedTokenCredential([
-            new EnvironmentCredential(
+        $sources = [];
+
+        if (! $this->options->excludeEnvironmentCredential) {
+            $sources[] = new EnvironmentCredential(
                 new EnvironmentCredentialOptions(authorityHost: $this->options->authorityHost)
-            ),
-            new WorkloadIdentityCredential(
+            );
+        }
+
+        if (! $this->options->excludeWorkloadIdentityCredential) {
+            $sources[] = new WorkloadIdentityCredential(
                 new WorkloadIdentityCredentialOptions(authorityHost: $this->options->authorityHost)
-            ),
-            new ManagedIdentityCredential(
+            );
+        }
+
+        if (! $this->options->excludeManagedIdentityCredential) {
+            $sources[] = new ManagedIdentityCredential(
                 new ManagedIdentityCredentialOptions(authorityHost: $this->options->authorityHost)
-            ),
-        ]);
+            );
+        }
+
+        $this->chain = new ChainedTokenCredential($sources);
     }
 
     public function getToken(TokenRequestContext $context): AccessToken
