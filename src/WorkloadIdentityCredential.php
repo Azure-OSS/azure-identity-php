@@ -45,7 +45,7 @@ final class WorkloadIdentityCredential implements TokenCredential
             ]);
 
             return AccessToken::fromTokenResponse($response->getBody()->getContents());
-        } catch (AuthenticationFailedException $e) {
+        } catch (CredentialUnavailableException|AuthenticationFailedException $e) {
             throw $e;
         } catch (\Throwable $e) {
             throw new AuthenticationFailedException('Failed to authenticate with Azure using workload identity', previous: $e);
@@ -54,14 +54,14 @@ final class WorkloadIdentityCredential implements TokenCredential
 
     private function readFederatedToken(string $tokenFilePath): string
     {
-        $token = file_get_contents($tokenFilePath);
+        $token = @file_get_contents($tokenFilePath);
         if ($token === false) {
-            throw new AuthenticationFailedException("Unable to read federated token file: {$tokenFilePath}");
+            throw new CredentialUnavailableException("Unable to read federated token file: {$tokenFilePath}");
         }
 
         $token = trim($token);
         if ($token === '') {
-            throw new AuthenticationFailedException("Federated token file is empty: {$tokenFilePath}");
+            throw new CredentialUnavailableException("Federated token file is empty: {$tokenFilePath}");
         }
 
         return $token;

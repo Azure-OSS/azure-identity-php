@@ -15,12 +15,20 @@ final class ChainedTokenCredential implements TokenCredential
 
     public function getToken(TokenRequestContext $context): AccessToken
     {
+        $unavailable = [];
+
         foreach ($this->sources as $source) {
             try {
                 return $source->getToken($context);
-            } catch (CredentialUnavailableException) {
+            } catch (CredentialUnavailableException $e) {
+                $unavailable[] = $e;
+
                 continue;
             }
+        }
+
+        if ($unavailable !== []) {
+            throw CredentialUnavailableException::createAggregateException('No credential available.', $unavailable);
         }
 
         throw new CredentialUnavailableException('No credential available.');
