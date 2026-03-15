@@ -14,7 +14,7 @@ final class ClientSecretCredential implements TokenCredential
         private readonly string $tenantId,
         private readonly string $clientId,
         private readonly string $clientSecret,
-        private readonly TokenCredentialOptions $options = new TokenCredentialOptions,
+        private readonly ClientSecretCredentialOptions $options = new ClientSecretCredentialOptions,
     ) {}
 
     public function getToken(TokenRequestContext $context): AccessToken
